@@ -95,17 +95,53 @@ const Auth = {
         `;
     },
 
+    isValidEmail(email, role) {
+        const emailLower = email.toLowerCase();
+        const parts = emailLower.split('@');
+        if (parts.length !== 2) return false;
+        
+        const domain = parts[1];
+        const allowedDomains = ['college.edu.in', 'student.college.edu.in', 'faculty.college.edu.in', 'collegename.edu.in', 'collegename.ac.in'];
+        if (!allowedDomains.includes(domain)) return false;
+
+        // Role-based restrictions
+        if (role === 'student') {
+            if (domain.includes('faculty')) return false;
+        } else if (role === 'faculty') {
+            if (domain.includes('student')) return false;
+        } else if (role === 'admin') {
+            if (!emailLower.startsWith('admin')) return false;
+        }
+        return true;
+    },
+
     showForm(role, mode) {
         document.getElementById('auth-cards-wrapper').style.display = 'none';
         const wrapper = document.getElementById('auth-form-wrapper');
         wrapper.style.display = 'block';
         wrapper.dataset.role = role;
 
+        let emailPlaceholder = "";
+        let emailHint = "";
+        if (role === 'student') {
+            emailPlaceholder = "rollno@student.college.edu.in";
+            emailHint = "💡 Required format: <code>rollno@student.college.edu.in</code> or <code>@college.edu.in</code>";
+        } else if (role === 'faculty') {
+            emailPlaceholder = "name.dept@faculty.college.edu.in";
+            emailHint = "💡 Required format: <code>name.dept@faculty.college.edu.in</code> or <code>@college.edu.in</code>";
+        } else {
+            emailPlaceholder = "admin@college.edu.in";
+            emailHint = "💡 Required format: <code>admin@college.edu.in</code>";
+        }
+
         if (mode === 'login') {
             wrapper.innerHTML = `
                 <h2 style="color:white; margin-bottom:20px;">${role.toUpperCase()} LOGIN</h2>
                 <form onsubmit="Auth.handleLogin(event)">
-                    <input type="email" id="l-email" class="input-field" placeholder="Email" required>
+                    <input type="email" id="l-email" class="input-field" placeholder="${emailPlaceholder}" required>
+                    <div style="font-size:0.78em; color:var(--text-muted); margin-top:-10px; margin-bottom:12px; text-align:left; line-height:1.3;">
+                        ${emailHint}
+                    </div>
                     <input type="password" id="l-password" class="input-field" placeholder="Password" required>
                     <button type="submit" class="btn-primary">Login</button>
                     ${role === 'admin' ? '' : `<button type="button" class="btn-text" onclick="Auth.showForm('${role}', 'signup')">Request Access</button>`}
@@ -118,13 +154,17 @@ const Auth = {
                 <h2 style="color:white; margin-bottom:20px;">${role.toUpperCase()} REGISTER</h2>
                 <form onsubmit="Auth.handleSignup(event)">
                     <input type="text" id="s-name" class="input-field" placeholder="Full Name" required>
-                    <input type="email" id="s-email" class="input-field" placeholder="Email" required>
-                    <input type="password" id="s-pass" class="input-field" placeholder="Create Password" required>
+                    <input type="email" id="s-email" class="input-field" placeholder="${emailPlaceholder}" required>
+                    <div style="font-size:0.78em; color:var(--text-muted); margin-top:-10px; margin-bottom:12px; text-align:left; line-height:1.3;">
+                        ${emailHint}
+                    </div>
+                    <input type="password" id="s-pass" class="input-field" placeholder="Create Password (min 6 chars)" required>
                     <input type="text" id="s-phone" class="input-field" placeholder="Phone" required>
                     <input type="text" id="s-enroll" class="input-field" placeholder="Enrollment / ID" required>
                     <input type="text" id="s-course" class="input-field" placeholder="Course / Dept" required>
                     <button type="submit" class="btn-primary">Request Access</button>
                     <button type="button" class="btn-text" onclick="Auth.showForm('${role}', 'login')">Back to Login</button>
+                    <div id="auth-error" style="color:var(--danger-text); margin-top:10px;"></div>
                 </form>
             `;
         }
@@ -136,6 +176,12 @@ const Auth = {
         const email = document.getElementById('l-email').value;
         const pass = document.getElementById('l-password').value;
         const err = document.getElementById('auth-error');
+        if (err) err.innerText = "";
+
+        if (!this.isValidEmail(email, role)) {
+            err.innerText = "Invalid institutional email domain for this role.";
+            return;
+        }
 
         try {
             const result = await firebase.auth().signInWithEmailAndPassword(email, pass);
@@ -151,14 +197,15 @@ const Auth = {
                 }
                 if (data.role !== role) {
                     await firebase.auth().signOut();
-                    err.innerText = `Invalid Role. You are a ${data.role}.`;
+                    err.innerText = `Invalid Role. You are registered as ${data.role}.`;
                     return;
                 }
             } else {
-                // Edge case: Auth exists but DB doc missing (e.g. legacy data issue)
-                // For Admin, we might auto-fix, but better to fail safe
+                // If auth user exists but no matching Firestore profile, block entry
+                await firebase.auth().signOut();
+                err.innerText = "User profile not found in database. Contact Admin.";
+                return;
             }
-            // onAuthStateChanged will handle the rest
         } catch (error) {
             console.log("Login Error Code:", error.code);
             if (error.code === 'auth/user-not-found' && email === 'admin@college.edu.in') {
@@ -175,7 +222,6 @@ const Auth = {
                         };
                         await firebase.firestore().collection('users').doc(adminCred.user.uid).set(adminUser);
                         alert("Admin Accepted Created! Logging in...");
-                        // Auth listener will catch the login
                     } catch (err2) {
                         err.innerText = "Creation Error: " + err2.message;
                     }
@@ -193,6 +239,18 @@ const Auth = {
         const role = document.getElementById('auth-form-wrapper').dataset.role;
         const email = document.getElementById('s-email').value;
         const pass = document.getElementById('s-pass').value;
+        const err = document.getElementById('auth-error');
+        if (err) err.innerText = "";
+
+        if (!this.isValidEmail(email, role)) {
+            if (err) err.innerText = "Invalid institutional email domain for this role.";
+            return;
+        }
+
+        if (pass.length < 6) {
+            if (err) err.innerText = "Password must be at least 6 characters long.";
+            return;
+        }
 
         try {
             const userCred = await firebase.auth().createUserWithEmailAndPassword(email, pass);
@@ -222,12 +280,13 @@ const Auth = {
 
             await firebase.firestore().collection('users').doc(newUser.id).set(newUser);
 
-            // CRITICAL FIX: Sign out immediately so they don't auto-login
+            // Sign out immediately so they don't auto-login
             await firebase.auth().signOut();
             alert("Account Created! You must wait for Admin Approval before logging in.");
             Auth.init();
         } catch (error) {
-            alert(error.message);
+            if (err) err.innerText = error.message;
+            else alert(error.message);
         }
     },
 

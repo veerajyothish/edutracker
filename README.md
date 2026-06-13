@@ -44,6 +44,73 @@ EduTracker is a modern, comprehensive, and responsive College Management System 
 
 ---
 
+## 🔐 Institutional Login Formats
+
+To enforce safety, the portal validates that users register and log in with specific institutional domains.
+
+- **Students**:
+  - **Domain format**: `@student.college.edu.in` or `@college.edu.in` (also supports `@collegename.edu.in` or `@collegename.ac.in` for compatibility).
+  - **Example**: `21cs101@student.college.edu.in`
+- **Faculty**:
+  - **Domain format**: `@faculty.college.edu.in` or `@college.edu.in` (also supports `@collegename.edu.in` or `@collegename.ac.in`).
+  - **Example**: `smith.cs@faculty.college.edu.in`
+- **Administrators**:
+  - **Specific email address**: `admin@college.edu.in`
+  - **Default Credentials**: If the database does not contain this user on login, the system will offer to seed it with the default password `admin123`.
+
+---
+
+## 🛡️ Recommended Firebase Security Rules
+
+To ensure your user data, grades, and files are protected, deploy these security configurations inside your [Firebase Console](https://console.firebase.google.com/):
+
+### Cloud Firestore Rules
+Paste these into **Firestore Database** -> **Rules**:
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function checking if user has been approved by Admin
+    function isActive() {
+      return request.auth != null && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'active';
+    }
+    
+    // User accounts
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null && (request.auth.uid == userId || 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'faculty');
+    }
+    
+    // Assignments & Grades
+    match /assignments/{assignmentId} {
+      allow read: if isActive();
+      allow create, update, delete: if isActive() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'faculty';
+    }
+    
+    // Placement Drives & Applications
+    match /placements/{placementId} {
+      allow read: if isActive();
+      allow create, update, delete: if isActive() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'faculty');
+    }
+    
+    // Global & Private Notifications
+    match /notifications/{notificationId} {
+      allow read: if isActive();
+      allow create, update, delete: if isActive();
+    }
+  }
+}
+```
+
+---
+
 ## 📦 Project Directory Structure
 
 ```text
@@ -94,9 +161,11 @@ EduTracker is a modern, comprehensive, and responsive College Management System 
 
 ---
 
-## ☁️ Deploying to Vercel (Instead of GitHub Pages)
+## ☁️ Deploying to Vercel
 
-Vercel is the recommended hosting platform for EduTracker due to its lightning-fast static CDN, automatic previews, and direct GitHub integration.
+This project is deployed on Vercel at **[edutracker-college.vercel.app](https://edutracker-college.vercel.app)**.
+
+Vercel is the recommended hosting platform due to its lightning-fast static CDN, automatic preview branches, and direct GitHub integration.
 
 ### Method 1: Git Integration (Recommended - Auto Deploy on Push)
 1. Sign in or sign up at [vercel.com](https://vercel.com).
@@ -107,7 +176,7 @@ Vercel is the recommended hosting platform for EduTracker due to its lightning-f
 6. Every time you commit and push to your GitHub repository, Vercel will build and deploy a live preview automatically.
 
 ### Method 2: Vercel CLI (Command Line)
-If you have Vercel CLI installed on your machine:
+If you want to deploy manually from command line:
 ```bash
 npm i -g vercel
 vercel login

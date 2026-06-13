@@ -275,7 +275,8 @@ const Auth = {
         const scanBtn = document.getElementById('scan-qr-btn');
         if (scanBtn) scanBtn.style.display = 'none';
 
-        const unread = STORE.notifications.filter(n => !n.read).length;
+        const userNotifs = STORE.notifications.filter(n => n.type === 'global' || n.userId === u.id);
+        const unread = userNotifs.filter(n => !n.read).length;
         const b = document.getElementById('notif-badge');
         if (b) { b.style.display = unread > 0 ? 'block' : 'none'; b.innerText = unread; }
 
@@ -607,8 +608,18 @@ const Views = {
     },
 
     notifications() {
-        STORE.notifications.forEach(n => n.read = true);
-        saveData();
+        const u = STORE.currentUser;
+        const userNotifs = STORE.notifications.filter(n => n.type === 'global' || n.userId === u.id);
+        
+        userNotifs.forEach(async n => {
+            if (!n.read) {
+                n.read = true;
+                try {
+                    await firebase.firestore().collection('notifications').doc(String(n.id)).update({ read: true });
+                } catch (e) { console.error(e); }
+            }
+        });
+
         const b = document.getElementById('notif-badge');
         if (b) b.style.display = 'none';
 
@@ -616,9 +627,9 @@ const Views = {
             <div class="card">
                 <h2>My Notifications</h2>
                 <div style="margin-top:20px; display:flex; flex-direction:column; gap:10px;">
-                    ${STORE.notifications.length === 0 ? '<p>No notifications.</p>' : STORE.notifications.map(n => `
+                    ${userNotifs.length === 0 ? '<p>No notifications.</p>' : userNotifs.map(n => `
                         <div style="background:rgba(255,255,255,0.05); padding:15px; border-radius:8px; border-left:4px solid var(--secondary-color);">
-                            <div style="font-size:0.8em; color:var(--text-muted);">${new Date(n.id).toLocaleString()}</div>
+                            <div style="font-size:0.8em; color:var(--text-muted);">${new Date(Number(n.id) || n.id).toLocaleString()}</div>
                             <div style="font-size:1.1em; margin-top:5px;">${n.text}</div>
                         </div>
                     `).join('')}
@@ -840,21 +851,39 @@ const Utils = {
         } catch (e) { console.error(e); alert('Error: ' + e.message); }
     },
 
-    gradeAssignment(assId, stuId) {
+    async gradeAssignment(assId, stuId) {
         const g = prompt("Enter Grade (0-100 or A-F):");
         if (g) {
-            const ass = STORE.assignments.find(a => a.id === assId);
+            const ass = STORE.assignments.find(a => String(a.id) === String(assId));
             const sub = ass.submissions.find(s => s.studentId === stuId);
             if (sub) {
                 sub.grade = g;
-                STORE.notifications.unshift({ id: Date.now(), text: `Assignment ${ass.title} Graded: ${g}`, type: 'personal', read: false });
-                saveData();
-                Router.route();
+                try {
+                    await firebase.firestore().collection('assignments').doc(String(assId)).update({
+                        submissions: ass.submissions
+                    });
+                    
+                    const notif = {
+                        id: Date.now().toString(),
+                        text: `Assignment ${ass.title} Graded: ${g}`,
+                        type: 'personal',
+                        read: false,
+                        userId: stuId
+                    };
+                    await firebase.firestore().collection('notifications').doc(notif.id).set(notif);
+                    STORE.notifications.unshift(notif);
+
+                    alert("Assignment Graded!");
+                    Router.route();
+                } catch (e) {
+                    console.error(e);
+                    alert("Error saving grade: " + e.message);
+                }
             }
         }
     },
 
-    updateAttendance(delta) {
+    async updateAttendance(delta) {
         const sid = document.getElementById('ma-student').value;
         const customSub = document.getElementById('ma-subject-custom').value;
         const selectSub = document.getElementById('ma-subject-select').value;
@@ -863,20 +892,29 @@ const Utils = {
         if (!sid || !subj) return alert("Select Student & Select/Enter Subject");
 
         const stu = STORE.users.find(x => x.id === sid);
+        if (!stu.attendance) stu.attendance = {};
         if (!stu.attendance[subj]) stu.attendance[subj] = { present: 0, total: 0 };
 
         if (delta === 0) {
             stu.attendance[subj] = { present: 0, total: 0 };
-            alert("Attendance Reset.");
         } else {
             stu.attendance[subj].total += 1;
             if (delta === 1) stu.attendance[subj].present += 1;
-            alert(`Updated! ${subj}: ${stu.attendance[subj].present}/${stu.attendance[subj].total}`);
         }
-        saveData();
+
+        try {
+            await firebase.firestore().collection('users').doc(sid).update({
+                [`attendance.${subj}`]: stu.attendance[subj]
+            });
+            alert(delta === 0 ? "Attendance Reset." : `Updated! ${subj}: ${stu.attendance[subj].present}/${stu.attendance[subj].total}`);
+            Router.route();
+        } catch (e) {
+            console.error(e);
+            alert("Error updating attendance: " + e.message);
+        }
     },
 
-    assignGrade() {
+    async assignGrade() {
         const sid = document.getElementById('gr-student').value;
         const customSub = document.getElementById('gr-subject-custom').value;
         const selectSub = document.getElementById('gr-subject-select').value;
@@ -888,9 +926,27 @@ const Utils = {
         if (!stu.grades) stu.grades = {};
         stu.grades[subj] = val;
 
-        STORE.notifications.unshift({ id: Date.now(), text: `New Grade in ${subj}: ${val}`, type: 'personal', read: false });
-        saveData();
-        alert("Grade Assigned!");
+        try {
+            await firebase.firestore().collection('users').doc(sid).update({
+                [`grades.${subj}`]: val
+            });
+
+            const notif = {
+                id: Date.now().toString(),
+                text: `New Grade in ${subj}: ${val}`,
+                type: 'personal',
+                read: false,
+                userId: sid
+            };
+            await firebase.firestore().collection('notifications').doc(notif.id).set(notif);
+            STORE.notifications.unshift(notif);
+
+            alert("Grade Assigned!");
+            Router.route();
+        } catch (e) {
+            console.error(e);
+            alert("Error assigning grade: " + e.message);
+        }
     },
 
     async addPlacement() {
@@ -945,14 +1001,32 @@ const Utils = {
         } catch (e) { console.error(e); alert('Error: ' + e.message); }
     },
 
-    updateAppStatus(pid, sid, status) {
-        const p = STORE.placements.find(x => x.id === pid);
+    async updateAppStatus(pid, sid, status) {
+        const p = STORE.placements.find(x => String(x.id) === String(pid));
         const app = p.applications.find(a => a.studentId === sid);
         if (app) {
             app.status = status;
-            STORE.notifications.unshift({ id: Date.now(), text: `Placement Update [${p.company}]: ${status}`, type: 'personal', read: false });
-            saveData();
-            Router.route();
+            try {
+                await firebase.firestore().collection('placements').doc(String(pid)).update({
+                    applications: p.applications
+                });
+
+                const notif = {
+                    id: Date.now().toString(),
+                    text: `Placement Update [${p.company}]: ${status}`,
+                    type: 'personal',
+                    read: false,
+                    userId: sid
+                };
+                await firebase.firestore().collection('notifications').doc(notif.id).set(notif);
+                STORE.notifications.unshift(notif);
+
+                alert("Status Updated!");
+                Router.route();
+            } catch (e) {
+                console.error(e);
+                alert("Error updating application status: " + e.message);
+            }
         }
     },
 
@@ -970,12 +1044,25 @@ const Utils = {
         else alert("No valid file linked.");
     },
 
-    postNews() {
+    async postNews() {
         const t = document.getElementById('news-in').value;
         if (t) {
-            STORE.notifications.unshift({ id: Date.now(), text: `[${STORE.currentUser.name}]: ${t}`, type: 'global', read: false });
-            saveData();
-            alert('Posted'); document.getElementById('news-in').value = ''; Router.route();
+            const notif = {
+                id: Date.now().toString(),
+                text: `[${STORE.currentUser.name}]: ${t}`,
+                type: 'global',
+                read: false
+            };
+            try {
+                await firebase.firestore().collection('notifications').doc(notif.id).set(notif);
+                STORE.notifications.unshift(notif);
+                alert('Posted');
+                document.getElementById('news-in').value = '';
+                Router.route();
+            } catch (e) {
+                console.error(e);
+                alert("Error posting announcement: " + e.message);
+            }
         }
     },
 
